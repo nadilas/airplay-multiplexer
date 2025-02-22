@@ -46,29 +46,52 @@ export class AudioMultiplexer extends EventEmitter {
   }
 
   private initializeDeviceDiscovery() {
+    console.log("Starting device discovery...");
+
     this.deviceDiscovery.on("deviceFound", (config: DeviceConfig) => {
-        console.log(`Found device: ${config.name} at ${config.host}`);
-    
-        // Automatically add discovered devices
-        switch(config.type) {
-          case "sonos":
-            this.addDevice(`sonos-${config.host}`, new SonosDevice(config));
-            break;
-          case "teufel":
-            this.addDevice(`teufel-${config.host}`, new TeufelDevice(config));
-            break;
-          case "homepod":
-            this.addDevice(`homepod-${config.host}`, new HomePodDevice(config));
-            break;
-        }
-      });
-    
-      this.deviceDiscovery.on("deviceLost", (config: DeviceConfig) => {
-        console.log(`Lost device: ${config.name}`);
-        // Handle device removal if needed
-      });
-    
-      this.deviceDiscovery.startDiscovery().catch((error) => {
+      console.log(`Found device: ${config.name} at ${config.host}`);
+
+      // Automatically add discovered devices
+      switch (config.type) {
+        case "sonos":
+          this.addDevice(`sonos-${config.host}`, new SonosDevice(config));
+          break;
+        case "teufel":
+          this.addDevice(`teufel-${config.host}`, new TeufelDevice(config));
+          break;
+        case "homepod":
+          this.addDevice(`homepod-${config.host}`, new HomePodDevice(config));
+          break;
+      }
+    });
+
+    this.deviceDiscovery.on("deviceLost", (config: DeviceConfig) => {
+      console.log(`Lost device: ${config.name}`);
+    });
+
+    // Start discovery and set up status monitoring
+    this.deviceDiscovery
+      .startDiscovery()
+      .then(() => {
+        // Check discovery status every 10 seconds for the first minute
+        let checks = 0;
+        const statusInterval = setInterval(() => {
+          checks++;
+          const status = this.deviceDiscovery.getDiscoveryStatus();
+          console.log("\nDiscovery Status Update:", status);
+
+          if (checks >= 6) {
+            // After 1 minute
+            clearInterval(statusInterval);
+            if (status.totalDevices === 0) {
+              console.warn(
+                "No devices found after 1 minute. Please check your network configuration."
+              );
+            }
+          }
+        }, 10000);
+      })
+      .catch((error) => {
         console.error("Failed to start device discovery:", error.message);
       });
   }
@@ -331,7 +354,7 @@ export class AudioMultiplexer extends EventEmitter {
   async stop(): Promise<void> {
     // Add stack trace logging
     const stack = new Error().stack;
-    console.log('stop() called from:', stack?.split('\n').slice(2).join('\n'));
+    console.log("stop() called from:", stack?.split("\n").slice(2).join("\n"));
 
     try {
       console.log("Stopping AudioMultiplexer...");
