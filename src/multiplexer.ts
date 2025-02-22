@@ -8,14 +8,13 @@ import {
   Stream,
 } from 'stream';
 
+import { DeviceDiscovery } from './discovery';
+import { HomePodDevice } from './homepod';
 import {
   AudioDevice,
   DeviceConfig,
 } from './models';
-import {
-  DeviceDiscovery,
-  SonosDevice,
-} from './sonos';
+import { SonosDevice } from './sonos';
 import { TeufelDevice } from './teufel';
 
 interface AudioMetadata {
@@ -48,19 +47,30 @@ export class AudioMultiplexer extends EventEmitter {
 
   private initializeDeviceDiscovery() {
     this.deviceDiscovery.on("deviceFound", (config: DeviceConfig) => {
-      console.log(`Found device: ${config.name} at ${config.host}`);
-
-      // Automatically add discovered devices
-      if (config.type === "sonos") {
-        this.addDevice(`sonos-${config.host}`, new SonosDevice(config));
-      } else if (config.type === "teufel") {
-        this.addDevice(`teufel-${config.host}`, new TeufelDevice(config));
-      }
-    });
-
-    this.deviceDiscovery.startDiscovery().catch((error) => {
-      console.error("Failed to start device discovery:", error.message);
-    });
+        console.log(`Found device: ${config.name} at ${config.host}`);
+    
+        // Automatically add discovered devices
+        switch(config.type) {
+          case "sonos":
+            this.addDevice(`sonos-${config.host}`, new SonosDevice(config));
+            break;
+          case "teufel":
+            this.addDevice(`teufel-${config.host}`, new TeufelDevice(config));
+            break;
+          case "homepod":
+            this.addDevice(`homepod-${config.host}`, new HomePodDevice(config));
+            break;
+        }
+      });
+    
+      this.deviceDiscovery.on("deviceLost", (config: DeviceConfig) => {
+        console.log(`Lost device: ${config.name}`);
+        // Handle device removal if needed
+      });
+    
+      this.deviceDiscovery.startDiscovery().catch((error) => {
+        console.error("Failed to start device discovery:", error.message);
+      });
   }
 
   private initializeShairport() {

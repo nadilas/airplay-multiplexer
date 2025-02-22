@@ -1,5 +1,4 @@
 import http from 'http';
-import { Client as SSDPClient } from 'node-ssdp';
 import { Stream } from 'stream';
 import { Device as UPNPDevice } from 'upnp-device-client';
 
@@ -9,29 +8,31 @@ import {
 } from './models';
 
 export class TeufelDevice extends AudioDevice {
-  private ssdpClient: SSDPClient;
   private upnpDevice?: UPNPDevice;
   private streamServer?: http.Server;
   private readonly DLNA_SERVICE = "urn:schemas-upnp-org:service:AVTransport:1";
 
   constructor(config: DeviceConfig) {
     super(config.name);
-    this.ssdpClient = new SSDPClient();
-    this.initializeDevice(config.host);
+    this.initializeDevice(config);
   }
 
-  private async initializeDevice(host: string) {
+  private async initializeDevice(config: DeviceConfig) {
     try {
-      // Search for DLNA devices
-      this.ssdpClient.on("response", async (headers: any) => {
-        if (headers.LOCATION.includes(host)) {
-          this.upnpDevice = new UPNPDevice(headers.LOCATION);
-          this.isConnected = true;
-          this.emit("connected");
-        }
-      });
-
-      this.ssdpClient.search("urn:schemas-upnp-org:device:MediaRenderer:1");
+      if (config.location) {
+        this.upnpDevice = new UPNPDevice(config.location);
+        // Verify device is accessible
+        await new Promise((resolve, reject) => {
+          this.upnpDevice!.getDeviceDescription((err: Error, desc: any) => {
+            if (err) reject(err);
+            else {
+              this.isConnected = true;
+              this.emit("connected");
+              resolve(desc);
+            }
+          });
+        });
+      }
     } catch (error) {
       console.error(`Failed to initialize Teufel device ${this.name}:`, error.message);
       this.emit("error", error);

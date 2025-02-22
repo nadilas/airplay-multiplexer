@@ -2,12 +2,21 @@ import EventEmitter from 'events';
 import { Stream } from 'stream';
 
 export interface DeviceConfig {
-    name: string;
-    host: string;
-    port: number;
-    type: 'sonos' | 'teufel' | 'homepod';
+  name: string;
+  host: string;
+  port: number;
+  type: "sonos" | "teufel" | "homepod";
+  location?: string; // For UPNP/DLNA devices
+  serviceType?: string; // For service identification
+  features?: {
+    airplay2?: boolean;
+    audioFormats?: string[];
+    bonjourId?: string;
+    model?: string;
+    manufacturer?: string;
+    [key: string]: any;
+  };
 }
-
 
 export class AudioDevice extends EventEmitter {
   protected volume: number = 50;
