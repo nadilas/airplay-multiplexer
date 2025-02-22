@@ -1,0 +1,25 @@
+{
+  "name": "airplay-multiplexer",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@types/node": "^22.13.5",
+    "@types/node-ssdp": "^4.0.4",
+    "axios": "^1.7.9",
+    "express": "^4.21.2",
+    "node-raumfeld": "^0.4.4",
+    "node-ssdp": "^4.0.1",
+    "node-upnp-client": "^0.0.2",
+    "shairport-sync-reader": "^0.0.9",
+    "sonos": "^1.14.1",
+    "spotify-web-api-node": "^5.0.2",
+    "upnp-device-client": "^1.0.2"
+  }
+}
