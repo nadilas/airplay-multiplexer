@@ -36,7 +36,7 @@ export class DeviceDiscovery extends EventEmitter {
 
     this.initializeSonosDiscovery();
     this.initializeTeufelDiscovery();
-    this.initializeHomePodDiscovery();
+    this.initializeAirplayDiscovery();
   }
 
   private initializeSonosDiscovery() {
@@ -99,8 +99,8 @@ export class DeviceDiscovery extends EventEmitter {
       }
     });
   }
-  private initializeHomePodDiscovery() {
-    console.log("Initializing HomePod discovery...");
+  private initializeAirplayDiscovery() {
+    console.log("Initializing Airplay discovery...");
     // Browse for AirPlay 2 devices
     const browser = this.bonjour.find({
       type: "airplay",
@@ -115,28 +115,24 @@ export class DeviceDiscovery extends EventEmitter {
         host: service.host,
       });
 
-      // Check if it's a HomePod
-      const isHomePod =
-        service.name.toLowerCase().includes("living room") ||
-        (service.txt &&
-          (service.txt.am === "HomePod" || service.txt.md === "HomePod"));
-      if (isHomePod) {
-        console.log("HomePod device found:", service.name);
+      const isAirplay = service.txt && service.txt.model
+      if (isAirplay) {
+        console.log("AirPlay device found:", service.name);
         const config: DeviceConfig = {
           name: service.name,
           host: service.host,
-          port: service.port,
-          type: "homepod",
+          port: service.port || 7000,
+          type: "airplay",
           features: {
             airplay2: true,
-            audioFormats: service.txt.sf?.split(",") || [],
-            bonjourId: service.txt.id,
-            model: service.txt.md,
-            manufacturer: service.txt.am,
+            model: service.txt.model,
+            deviceId: service.txt.deviceid,
+            features: service.txt.features,
+            flags: service.txt.flags
           },
         };
 
-        const deviceId = `homepod-${service.txt.id}`;
+        const deviceId = `airplay-${service.txt.deviceid || service.host}`;
         this.addDevice(deviceId, config);
       }
     });
@@ -144,7 +140,7 @@ export class DeviceDiscovery extends EventEmitter {
     browser.on("down", (service) => {
       console.log("Bonjour service lost:", service.name);
       if (service.txt && service.txt.id) {
-        const deviceId = `homepod-${service.txt.id}`;
+        const deviceId = `airplay-${service.txt.id}`;
         this.removeDevice(deviceId);
       }
     });
@@ -244,7 +240,7 @@ export class DeviceDiscovery extends EventEmitter {
       devicesByType: {
         sonos: this.getDevicesByType("sonos").length,
         teufel: this.getDevicesByType("teufel").length,
-        homepod: this.getDevicesByType("homepod").length,
+        airplay: this.getDevicesByType("airplay").length,
       },
       ssdpActive: !!(this.ssdpClient as any)._bound,
       bonjourActive: !!this.bonjour,
@@ -259,7 +255,7 @@ export class DeviceDiscovery extends EventEmitter {
     };
   }
 
-  getDevicesByType(type: "sonos" | "teufel" | "homepod"): DeviceConfig[] {
+  getDevicesByType(type: "sonos" | "teufel" | "airplay"): DeviceConfig[] {
     return this.getDiscoveredDevices().filter((device) => device.type === type);
   }
 }

@@ -10,7 +10,7 @@ import {
   DeviceConfig,
 } from './models';
 
-export class HomePodDevice extends AudioDevice {
+export class AirplayDevice extends AudioDevice {
   private airplayDevice: any;
   private reconnectTimeout?: NodeJS.Timeout;
   private readonly MAX_RECONNECT_ATTEMPTS = 5;
@@ -19,11 +19,11 @@ export class HomePodDevice extends AudioDevice {
 
   constructor(config: DeviceConfig) {
     super(config.name);
-    this.airplayDevice = new airplay.Device({
-      host: config.host,
-      port: config.port || 7000,
-      volume: this.volume / 100 // AirPlay uses 0-1 range
-    });
+    console.log(airplay)
+    this.airplayDevice = airplay(
+      config.host,
+      config.port || 7000,
+    );
 
     this.initializeDevice();
     this.setupEventHandlers();
@@ -96,6 +96,7 @@ export class HomePodDevice extends AudioDevice {
 
   async play(stream: Stream): Promise<void> {
     try {
+      console.log(`${this.name} starting playing on device`) 
       this.streamBuffer = new PassThrough();
       stream.pipe(this.streamBuffer);
 

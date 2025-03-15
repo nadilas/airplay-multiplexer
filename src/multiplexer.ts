@@ -1,15 +1,12 @@
-import {
-  ChildProcess,
-  spawn,
-} from 'child_process';
 import EventEmitter from 'events';
+import { ShairportSync } from 'shairport-sync';
 import {
   PassThrough,
   Stream,
 } from 'stream';
 
+import { AirplayDevice } from './airplay';
 import { DeviceDiscovery } from './discovery';
-import { HomePodDevice } from './homepod';
 import {
   AudioDevice,
   DeviceConfig,
@@ -30,7 +27,7 @@ export class AudioMultiplexer extends EventEmitter {
   private currentMetadata: AudioMetadata = {};
   private pipeStream: PassThrough;
   private readonly PIPE_PATH = "/tmp/shairport-sync-audio";
-  private shairport?: ChildProcess;
+  private shairport?: ShairportSync;
 
   constructor() {
     super();
@@ -60,7 +57,7 @@ export class AudioMultiplexer extends EventEmitter {
           this.addDevice(`teufel-${config.host}`, new TeufelDevice(config));
           break;
         case "homepod":
-          this.addDevice(`homepod-${config.host}`, new HomePodDevice(config));
+          this.addDevice(`homepod-${config.host}`, new AirplayDevice(config));
           break;
       }
     });
@@ -98,172 +95,25 @@ export class AudioMultiplexer extends EventEmitter {
 
   private initializeShairport() {
     try {
-      // Create named pipe if it doesn't exist
-      const fs = require("fs");
-      if (!fs.existsSync(this.PIPE_PATH)) {
-        const { execSync } = require("child_process");
-        execSync(`mkfifo ${this.PIPE_PATH}`);
-      }
-
-      // Read from the pipe
-      const { createReadStream } = require("fs");
-      const pipeReader = createReadStream(this.PIPE_PATH);
-
-      pipeReader.on("data", (chunk: Buffer) => {
-        this.pipeStream.write(chunk);
-        this.handleAudioStream(this.pipeStream);
-      });
-
-      pipeReader.on("error", (error: Error) => {
-        this.handleProcessError(error);
-      });
-
-      // Start shairport-sync if not already running
-      this.startShairportSync();
+        this.startShairportSync();
     } catch (error) {
       this.handleProcessError(error);
     }
   }
 
   private startShairportSync() {
-    try {
-      // First check if shairport-sync is installed
-      try {
-        const { execSync } = require("child_process");
-        execSync("which shairport-sync");
-      } catch (error) {
-        this.emit(
-          "fatalError",
-          new Error("shairport-sync is not installed. Please install it first.")
-        );
-        return;
-      }
+    const airplay = new ShairportSync();
 
-      // Check if shairport-sync is already running
-      try {
-        const { execSync } = require("child_process");
-        const runningProcess = execSync("pgrep shairport-sync").toString();
-        if (runningProcess) {
-          execSync(`kill ${runningProcess}`);
-          console.log("Killed existing shairport-sync process");
-        }
-      } catch (error) {
-        // No existing process found, which is fine
-      }
+    // Set the receiver public name
+    airplay.name = 'Multi-Room Audio';
 
-      console.log("Starting shairport-sync with options:", {
-        name: "Multi-Room Audio",
-        pipePath: this.PIPE_PATH,
-      });
+    airplay.start()
 
-      // Updated command line options
-      this.shairport = spawn("shairport-sync", [
-        "-a",
-        "Multi-Room Audio", // Set AirPlay name
-        "-p",
-        "6000",
-        "-d",
-        "-o",
-        "stdout", // Output to stdout instead of pipe
-        "-v", // Verbose mode
-      ]);
-
-      // Pipe shairport's output to our named pipe
-      if (this.shairport.stdout) {
-        const fs = require("fs");
-        const writeStream = fs.createWriteStream(this.PIPE_PATH);
-        this.shairport.stdout.pipe(writeStream);
-      }
-
-      let startupBuffer = "";
-      const startupTimeout = setTimeout(() => {
-        console.error("Startup buffer content:", startupBuffer);
-        this.handleProcessError(new Error("shairport-sync startup timeout"));
-      }, 5000);
-
-      this.shairport.stdout?.on("data", (data: Buffer) => {
-        const message = data.toString();
-        startupBuffer += message;
-        console.log("shairport-sync:", message);
-      });
-
-      this.shairport.stderr?.on("data", (data: Buffer) => {
-        const errorMsg = data.toString();
-        startupBuffer += errorMsg;
-
-        // Only treat actual errors as errors
-        if (
-          errorMsg.toLowerCase().includes("error") ||
-          errorMsg.toLowerCase().includes("fatal")
-        ) {
-          if (errorMsg.includes("daemon") || errorMsg.includes("running")) {
-            this.emit(
-              "fatalError",
-              new Error("shairport-sync daemon conflict: " + errorMsg)
-            );
-            return;
-          }
-
-          if (errorMsg.includes("permission")) {
-            this.emit(
-              "fatalError",
-              new Error("shairport-sync permission error: " + errorMsg)
-            );
-            return;
-          }
-
-          console.error("shairport-sync error:", errorMsg);
-          this.handleProcessError(new Error(`Shairport error: ${errorMsg}`));
-        } else {
-          // Just log non-error messages
-          console.log("shairport-sync:", errorMsg);
-        }
-      });
-
-      this.shairport.on("error", (error: Error) => {
-        clearTimeout(startupTimeout);
-        console.error("Shairport process error:", error.message);
-        this.handleProcessError(error);
-      });
-
-      let restartAttempts = 0;
-      const MAX_RESTART_ATTEMPTS = 3;
-
-      this.shairport.on("close", (code: number) => {
-        clearTimeout(startupTimeout);
-        console.log("shairport-sync process exited with code:", code);
-
-        if (code !== 0) {
-          if (restartAttempts < MAX_RESTART_ATTEMPTS) {
-            restartAttempts++;
-            console.log(
-              `Restart attempt ${restartAttempts} of ${MAX_RESTART_ATTEMPTS}`
-            );
-            this.restartShairportSync();
-          } else {
-            this.emit(
-              "fatalError",
-              new Error(
-                `Shairport failed to start after ${MAX_RESTART_ATTEMPTS} attempts. Last error: ${startupBuffer}`
-              )
-            );
-          }
-        }
-      });
-
-      process.on("exit", () => {
-        if (this.shairport?.pid) {
-          try {
-            process.kill(this.shairport.pid);
-          } catch (error) {
-            // Ignore kill errors during shutdown
-          }
-        }
-      });
-    } catch (error) {
-      console.error("Failed to start shairport-sync:", error);
-      this.handleProcessError(error);
-    }
+    airplay.output.stream.pipe(this.pipeStream);
+    airplay.output.stream.on('data', (chunk: Buffer) => {
+        console.log('pipe data', chunk)
+      this.handleAudioStream(this.pipeStream);
+    });
   }
 
   private restartShairportSync() {
@@ -295,6 +145,7 @@ export class AudioMultiplexer extends EventEmitter {
       const streamPromises = Array.from(this.devices.entries()).map(
         async ([id, device], index) => {
           try {
+            console.log('playing stream on device', id)
             await device.play(streams[index]);
           } catch (error) {
             console.error(`Failed to stream to device ${id}:`, error);

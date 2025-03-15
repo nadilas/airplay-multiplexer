@@ -19,6 +19,7 @@
     "node-raumfeld": "^0.4.4",
     "node-ssdp": "^4.0.1",
     "node-upnp-client": "^0.0.2",
+    "shairport-sync": "^1.0.0",
     "shairport-sync-reader": "^0.0.9",
     "sonos": "^1.14.1",
     "spotify-web-api-node": "^5.0.2",

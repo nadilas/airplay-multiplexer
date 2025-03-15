@@ -5,7 +5,7 @@ export interface DeviceConfig {
   name: string;
   host: string;
   port: number;
-  type: "sonos" | "teufel" | "homepod";
+  type: "sonos" | "teufel" | "airplay";
   location?: string; // For UPNP/DLNA devices
   serviceType?: string; // For service identification
   features?: {
