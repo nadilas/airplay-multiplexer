@@ -1,16 +1,20 @@
-import { Router, Request, Response } from 'express';
+use std::sync::Arc;
 
-export function createUiRouter(): Router {
-  const router = Router();
+use axum::response::Html;
+use axum::routing::get;
+use axum::Router;
 
-  router.get('/', (req: Request, res: Response) => {
-    res.type('html').send(dashboardHtml);
-  });
+use crate::server::AppState;
 
-  return router;
+pub fn routes() -> Router<Arc<AppState>> {
+    Router::new().route("/", get(dashboard))
 }
 
-const dashboardHtml = `<!DOCTYPE html>
+async fn dashboard() -> Html<&'static str> {
+    Html(DASHBOARD_HTML)
+}
+
+const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -264,14 +268,14 @@ const dashboardHtml = `<!DOCTYPE html>
           '<div class="device-controls">' +
             '<div class="slider-row">' +
               '<input type="range" min="0" max="100" value="' + d.volume + '" ' +
-                'onchange="setVolume(\\'' + d.id + '\\', this.value)" ' +
+                'onchange="setVolume(\'' + d.id + '\', this.value)" ' +
                 'oninput="this.nextElementSibling.textContent=this.value">' +
               '<span class="volume-value">' + d.volume + '</span>' +
             '</div>' +
-            '<button class="btn btn-mute ' + mutedClass + '" onclick="toggleMute(\\'' + d.id + '\\', ' + !d.muted + ')">' +
+            '<button class="btn btn-mute ' + mutedClass + '" onclick="toggleMute(\'' + d.id + '\', ' + !d.muted + ')">' +
               (d.muted ? 'Unmute' : 'Mute') +
             '</button>' +
-            '<button class="btn btn-enable ' + enabledClass + '" onclick="toggleEnable(\\'' + d.id + '\\', ' + !d.enabled + ')">' +
+            '<button class="btn btn-enable ' + enabledClass + '" onclick="toggleEnable(\'' + d.id + '\', ' + !d.enabled + ')">' +
               (d.enabled ? 'On' : 'Off') +
             '</button>' +
           '</div>' +
@@ -324,4 +328,4 @@ const dashboardHtml = `<!DOCTYPE html>
     }
   </script>
 </body>
-</html>`;
+</html>"##;
