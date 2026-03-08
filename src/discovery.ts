@@ -1,261 +1,239 @@
-import Bonjour from 'bonjour-service';
-// src/DeviceDiscovery.ts
 import { EventEmitter } from 'events';
-import { Client as SSDPClient } from 'node-ssdp';
-import { DeviceDiscovery as SonosDiscovery } from 'sonos';
-import { Device as UPNPDevice } from 'upnp-device-client';
-
-import { DeviceConfig } from './models';
+import { DeviceConfig, DeviceType } from './types';
+import axios from 'axios';
 
 export class DeviceDiscovery extends EventEmitter {
-  private ssdpClient: SSDPClient;
-  private bonjour: Bonjour;
-  private discoveredDevices: Map<string, DeviceConfig> = new Map();
-  private discoveryInterval?: NodeJS.Timeout;
+  private devices = new Map<string, DeviceConfig>();
+  private sonosDiscovery: any;
+  private ssdpClient: any;
+  private bonjourBrowser: any;
+  private bonjourInstance: any;
+  private ssdpSearchInterval: ReturnType<typeof setInterval> | null = null;
 
-  constructor() {
-    super();
-
-    console.log("Initializing device discovery...");
-    this.ssdpClient = new SSDPClient();
-    this.bonjour = new Bonjour();
-    this.initializeDiscovery();
+  async start(): Promise<void> {
+    console.log('[discovery] Starting device discovery...');
+    this.startSonosDiscovery();
+    this.startSsdpDiscovery();
+    this.startBonjourDiscovery();
   }
 
-  private initializeDiscovery() {
-    console.log("Setting up discovery listeners...");
+  private startSonosDiscovery(): void {
+    try {
+      const { DeviceDiscovery: SonosDiscovery } = require('sonos');
 
-    // Add SSDP search listeners
-    this.ssdpClient.on("advertise-alive", (headers: any) => {
-      console.log("SSDP alive advertisement received:", headers.NT);
-    });
+      this.sonosDiscovery = new SonosDiscovery();
 
-    this.ssdpClient.on("advertise-bye", (headers: any) => {
-      console.log("SSDP bye advertisement received:", headers.NT);
-    });
+      this.sonosDiscovery.on('DeviceAvailable', (device: any) => {
+        const host = device.host;
+        const port = device.port || 1400;
+        const id = `sonos-${host}`;
 
-    this.initializeSonosDiscovery();
-    this.initializeTeufelDiscovery();
-    this.initializeAirplayDiscovery();
-  }
+        if (this.devices.has(id)) return;
 
-  private initializeSonosDiscovery() {
-    console.log("Initializing Sonos discovery...");
-    SonosDiscovery((device: any) => {
-      const config: DeviceConfig = {
-        name: `Sonos ${device.host}`,
-        host: device.host,
-        port: 1400,
-        type: "sonos",
-      };
-      const deviceId = `sonos-${device.host}`;
-      this.addDevice(deviceId, config);
-    });
-  }
-
-  private initializeTeufelDiscovery() {
-    console.log("Initializing Teufel/DLNA discovery...");
-    this.ssdpClient.on("response", async (headers: any) => {
-      console.log("SSDP device details:", {
-        server: headers.SERVER,
-        location: headers.LOCATION,
-        st: headers.ST,
-      });
-      try {
-        // Teufel/Raumfeld devices might not advertise in SERVER header
-        // Also check the location and ST (search target) headers
-        const isTeufel =
-          headers.SERVER?.toLowerCase().includes("teufel") ||
-          headers.SERVER?.toLowerCase().includes("raumfeld") ||
-          headers.LOCATION?.toLowerCase().includes("teufel") ||
-          headers.LOCATION?.toLowerCase().includes("raumfeld") ||
-          headers.ST?.toLowerCase().includes("teufel") ||
-          headers.ST?.toLowerCase().includes("raumfeld");
-
-        if (isTeufel) {
-          console.log("Teufel device found:", headers.LOCATION);
-          const device = new UPNPDevice(headers.LOCATION);
-          const description = await new Promise((resolve, reject) => {
-            device.getDeviceDescription((err: Error, desc: any) => {
-              if (err) reject(err);
-              else resolve(desc);
-            });
-          });
-
+        // Get device name
+        device.getName().then((name: string) => {
           const config: DeviceConfig = {
-            name: description.friendlyName || `Teufel ${headers.LOCATION}`,
-            host: new URL(headers.LOCATION).hostname,
-            port: parseInt(new URL(headers.LOCATION).port) || 1900,
-            type: "teufel",
-            location: headers.LOCATION,
-            serviceType: description.serviceType,
+            id,
+            name: name || `Sonos ${host}`,
+            host,
+            port,
+            type: 'sonos',
           };
 
-          const deviceId = `teufel-${config.host}`;
-          this.addDevice(deviceId, config);
-        }
-      } catch (error) {
-        console.error("Error handling Teufel device discovery:", error.message);
-      }
-    });
-  }
-  private initializeAirplayDiscovery() {
-    console.log("Initializing Airplay discovery...");
-    // Browse for AirPlay 2 devices
-    const browser = this.bonjour.find({
-      type: "airplay",
-      protocol: "tcp",
-    });
+          this.addDevice(config);
+        }).catch((err: any) => {
+          // Fall back to IP-based name
+          const config: DeviceConfig = {
+            id,
+            name: `Sonos ${host}`,
+            host,
+            port,
+            type: 'sonos',
+          };
 
-    browser.on("up", (service) => {
-      console.log("Bonjour service details:", {
-        name: service.name,
-        type: service.type,
-        txt: service.txt,
-        host: service.host,
+          this.addDevice(config);
+        });
       });
 
-      const isAirplay = service.txt && service.txt.model
-      if (isAirplay) {
-        console.log("AirPlay device found:", service.name);
-        const config: DeviceConfig = {
-          name: service.name,
-          host: service.host,
-          port: service.port || 7000,
-          type: "airplay",
-          features: {
-            airplay2: true,
-            model: service.txt.model,
-            deviceId: service.txt.deviceid,
-            features: service.txt.features,
-            flags: service.txt.flags
-          },
-        };
-
-        const deviceId = `airplay-${service.txt.deviceid || service.host}`;
-        this.addDevice(deviceId, config);
-      }
-    });
-
-    browser.on("down", (service) => {
-      console.log("Bonjour service lost:", service.name);
-      if (service.txt && service.txt.id) {
-        const deviceId = `airplay-${service.txt.id}`;
-        this.removeDevice(deviceId);
-      }
-    });
-  }
-
-  private addDevice(id: string, config: DeviceConfig) {
-    if (!this.discoveredDevices.has(id)) {
-      this.discoveredDevices.set(id, config);
-      this.emit("deviceFound", config);
+      console.log('[discovery] Sonos discovery started');
+    } catch (err: any) {
+      console.warn(`[discovery] Sonos discovery unavailable: ${err.message}`);
     }
   }
 
-  private removeDevice(id: string) {
-    if (this.discoveredDevices.has(id)) {
-      const device = this.discoveredDevices.get(id);
-      this.discoveredDevices.delete(id);
-      this.emit("deviceLost", device);
-    }
-  }
-
-  private startSSDPClient() {
+  private startSsdpDiscovery(): void {
     try {
-      this.ssdpClient.start();
-      console.log("SSDP client started successfully");
-    } catch (error) {
-      console.error("Failed to start SSDP client:", error);
-    }
-  }
+      const { Client: SsdpClient } = require('node-ssdp');
 
-  async startDiscovery(): Promise<void> {
-    try {
-      console.log("Starting active device discovery...");
+      this.ssdpClient = new SsdpClient();
 
-      // Start SSDP client explicitly
-      this.startSSDPClient();
+      this.ssdpClient.on('response', async (headers: any, statusCode: number, rinfo: any) => {
+        if (statusCode !== 200) return;
 
-      // initial search
-      this.performSearch();
+        const location = headers.LOCATION;
+        if (!location) return;
 
-      // Repeat SSDP search periodically
-      this.discoveryInterval = setInterval(() => {
-        this.performSearch();
+        const server = (headers.SERVER || '').toLowerCase();
+        const st = headers.ST || '';
+
+        // Look for MediaRenderer devices (Teufel, generic DLNA)
+        if (st.includes('MediaRenderer') || st.includes('mediarenderer')) {
+          await this.handleSsdpDevice(location, rinfo.address);
+        }
+      });
+
+      // Search for DLNA MediaRenderers
+      this.ssdpClient.search('urn:schemas-upnp-org:device:MediaRenderer:1');
+
+      // Periodic re-search
+      this.ssdpSearchInterval = setInterval(() => {
+        this.ssdpClient.search('urn:schemas-upnp-org:device:MediaRenderer:1');
       }, 30000);
 
-      // Log current state after a short delay
-      setTimeout(() => {
-        this.logDiscoveryStatus();
-      }, 5000);
-    } catch (error) {
-      console.error("Error starting device discovery:", error.message);
+      console.log('[discovery] SSDP discovery started');
+    } catch (err: any) {
+      console.warn(`[discovery] SSDP discovery unavailable: ${err.message}`);
     }
   }
 
-  private performSearch() {
-    console.log("Performing device search...");
-    const searches = [
-      "urn:schemas-upnp-org:device:MediaRenderer:1",
-      "urn:schemas-teufel-systems:device:*",
-      "urn:schemas-raumfeld:device:*",
-    ];
+  private async handleSsdpDevice(location: string, host: string): Promise<void> {
+    const id = `teufel-${host}`;
+    if (this.devices.has(id)) return;
 
-    searches.forEach((search) => {
-      console.log(`Searching for: ${search}`);
-      this.ssdpClient.search(search);
-    });
-  }
+    try {
+      const response = await axios.get(location, { timeout: 5000 });
+      const xml = response.data;
 
-  private logDiscoveryStatus() {
-    console.log("\n=== Discovery Status ===");
-    console.log("SSDP Client active:", !!(this.ssdpClient as any)._bound);
-    console.log("Bonjour Browser active:", !!this.bonjour);
-    console.log("Discovered devices:", this.discoveredDevices.size);
-    console.log(
-      "Device types found:",
-      new Set([...this.discoveredDevices.values()].map((d) => d.type))
-    );
-    console.log("=====================\n");
-  }
+      // Parse device name from XML description
+      const nameMatch = xml.match(/<friendlyName>([^<]+)<\/friendlyName>/);
+      const name = nameMatch ? nameMatch[1] : `DLNA Device ${host}`;
 
-  stop(): void {
-    console.log("Stopping device discovery...");
-    if (this.discoveryInterval) {
-      clearInterval(this.discoveryInterval);
-    }
-    this.ssdpClient?.stop();
-    this.bonjour?.destroy();
-    console.log("Device discovery stopped.");
-  }
+      // Check if it looks like a Teufel/Raumfeld or generic DLNA renderer
+      const isTeufel = xml.toLowerCase().includes('teufel') || xml.toLowerCase().includes('raumfeld');
+      const isMediaRenderer = xml.includes('MediaRenderer');
 
-  getDiscoveredDevices(): DeviceConfig[] {
-    return Array.from(this.discoveredDevices.values());
-  }
-
-  getDiscoveryStatus(): Record<string, any> {
-    return {
-      totalDevices: this.discoveredDevices.size,
-      devicesByType: {
-        sonos: this.getDevicesByType("sonos").length,
-        teufel: this.getDevicesByType("teufel").length,
-        airplay: this.getDevicesByType("airplay").length,
-      },
-      ssdpActive: !!(this.ssdpClient as any)._bound,
-      bonjourActive: !!this.bonjour,
-      discoveredDevices: Array.from(this.discoveredDevices.entries()).map(
-        ([id, config]) => ({
+      if (isMediaRenderer) {
+        const config: DeviceConfig = {
           id,
-          name: config.name,
-          type: config.type,
-          host: config.host,
-        })
-      ),
-    };
+          name: isTeufel ? `Teufel ${name}` : name,
+          host,
+          port: new URL(location).port ? parseInt(new URL(location).port) : 80,
+          type: 'teufel', // DLNA devices use the same UPnP control path
+          location,
+          model: isTeufel ? 'Teufel' : 'DLNA',
+        };
+
+        this.addDevice(config);
+      }
+    } catch (err: any) {
+      // Could not fetch device description, skip
+    }
   }
 
-  getDevicesByType(type: "sonos" | "teufel" | "airplay"): DeviceConfig[] {
-    return this.getDiscoveredDevices().filter((device) => device.type === type);
+  private startBonjourDiscovery(): void {
+    try {
+      const { Bonjour } = require('bonjour-service');
+      this.bonjourInstance = new Bonjour();
+
+      this.bonjourBrowser = this.bonjourInstance.find({ type: 'airplay', protocol: 'tcp' });
+
+      this.bonjourBrowser.on('up', (service: any) => {
+        const host = service.referer?.address || service.addresses?.[0];
+        if (!host) return;
+
+        const id = `airplay-${host}`;
+        if (this.devices.has(id)) return;
+
+        const config: DeviceConfig = {
+          id,
+          name: service.name || `AirPlay ${host}`,
+          host,
+          port: service.port || 7000,
+          type: 'airplay',
+          model: service.txt?.model || service.txt?.am || undefined,
+        };
+
+        this.addDevice(config);
+      });
+
+      this.bonjourBrowser.on('down', (service: any) => {
+        const host = service.referer?.address || service.addresses?.[0];
+        if (!host) return;
+
+        const id = `airplay-${host}`;
+        this.removeDevice(id);
+      });
+
+      console.log('[discovery] Bonjour/AirPlay discovery started');
+    } catch (err: any) {
+      console.warn(`[discovery] Bonjour discovery unavailable: ${err.message}`);
+    }
+  }
+
+  private addDevice(config: DeviceConfig): void {
+    if (this.devices.has(config.id)) return;
+
+    this.devices.set(config.id, config);
+    console.log(`[discovery] Found ${config.type} device: ${config.name} (${config.host}:${config.port})`);
+    this.emit('deviceFound', config);
+  }
+
+  private removeDevice(id: string): void {
+    const config = this.devices.get(id);
+    if (config) {
+      this.devices.delete(id);
+      console.log(`[discovery] Lost device: ${config.name}`);
+      this.emit('deviceLost', config);
+    }
+  }
+
+  getDevices(): DeviceConfig[] {
+    return Array.from(this.devices.values());
+  }
+
+  getDevicesByType(type: DeviceType): DeviceConfig[] {
+    return this.getDevices().filter((d) => d.type === type);
+  }
+
+  async stop(): Promise<void> {
+    if (this.ssdpSearchInterval) {
+      clearInterval(this.ssdpSearchInterval);
+      this.ssdpSearchInterval = null;
+    }
+
+    if (this.ssdpClient) {
+      try {
+        this.ssdpClient.stop();
+      } catch {
+        // Ignore
+      }
+    }
+
+    if (this.sonosDiscovery) {
+      try {
+        this.sonosDiscovery.destroy();
+      } catch {
+        // Ignore
+      }
+    }
+
+    if (this.bonjourBrowser) {
+      try {
+        this.bonjourBrowser.stop();
+      } catch {
+        // Ignore
+      }
+    }
+
+    if (this.bonjourInstance) {
+      try {
+        this.bonjourInstance.destroy();
+      } catch {
+        // Ignore
+      }
+    }
+
+    this.devices.clear();
+    console.log('[discovery] Discovery stopped');
   }
 }

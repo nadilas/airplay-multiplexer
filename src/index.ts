@@ -1,133 +1,56 @@
+import { loadConfig } from './config';
 import { AudioMultiplexer } from './multiplexer';
-import { SonosDevice } from './sonos';
-import { TeufelDevice } from './teufel';
+import { createServer } from './server/index';
 
-// Usage example:
-const multiplexer = new AudioMultiplexer();
+async function main(): Promise<void> {
+  const config = loadConfig();
 
-// Device discovery will happen automatically
-// You can also check discovered devices:
-setInterval(() => {
-    const devices = multiplexer['deviceDiscovery'].getDiscoveredDevices();
-    console.log('Currently discovered devices:', devices);
-  }, 60000); // Every minute
+  console.log('=== Multi-Room Audio Multiplexer ===');
+  console.log(`Receiver Name: ${config.receiverName}`);
+  console.log(`Local IP: ${config.localIp}`);
+  console.log(`HTTP Port: ${config.httpPort}`);
+  console.log(`Audio Format: ${config.audioFormat.sampleRate}Hz / ${config.audioFormat.bitDepth}bit / ${config.audioFormat.channels}ch`);
+  console.log('====================================\n');
 
-// Add Teufel device
-multiplexer.addDevice(
-  "kitchen-teufel",
-  new TeufelDevice({
-    name: "Kitchen Teufel",
-    host: "192.168.1.y",
-    port: 1900,
-    type: 'teufel'
-  })
-);
+  const multiplexer = new AudioMultiplexer(config);
 
-// Error handling
-multiplexer.on("error", (error) => {
-  console.error("Multiplexer error:", error);
-});
+  // Create HTTP server
+  const app = createServer(
+    multiplexer.getStreamManager(),
+    () => multiplexer,
+    config.httpPort
+  );
 
-multiplexer.on("deviceError", ({ id, error }) => {
-  console.error(`Device ${id} error:`, error);
-});
+  // Start HTTP server
+  const server = app.listen(config.httpPort, '0.0.0.0', () => {
+    console.log(`[server] Web UI and API listening on http://${config.localIp}:${config.httpPort}`);
+    console.log(`[server] Audio stream at http://${config.localIp}:${config.httpPort}/audio/stream`);
+  });
 
-// Handle metadata updates
-multiplexer.on("metadata", (metadata) => {
-  console.log("Now playing:", metadata);
-});
+  // Start the multiplexer (discovery + shairport)
+  await multiplexer.start();
 
-// Add error handling middleware
-const handleDeviceError = async (id: string, error: Error) => {
-  console.error(`Device ${id} error:`, error.message);
-  try {
-    const device = multiplexer["devices"].get(id);
-    if (device) {
-      // Attempt to reinitialize the device
-      if (device instanceof SonosDevice || device instanceof TeufelDevice) {
-        await device["initializeDevice"]();
-      }
-    }
-  } catch (recoveryError) {
-    console.error(`Failed to recover device ${id}:`, recoveryError.message);
-  }
-};
-
-multiplexer.on("error", async (error: Error) => {
-  console.error("Multiplexer error:", error.message);
-  try {
-    await multiplexer.recover();
-  } catch (recoveryError) {
-    console.error("Failed to recover from error:", recoveryError.message);
-  }
-});
-
-// Handle fatal errors
-multiplexer.on("fatalError", async (error: Error) => {
-  console.error("Fatal error in AudioMultiplexer:", error.message);
-  try {
+  // Graceful shutdown
+  const shutdown = async (signal: string) => {
+    console.log(`\n[main] Received ${signal}, shutting down...`);
     await multiplexer.stop();
-  } finally {
-    process.exit(1);
-  }
-});
+    server.close(() => {
+      console.log('[main] HTTP server closed');
+      process.exit(0);
+    });
 
-multiplexer.on("deviceError", ({ id, error }) => {
-  handleDeviceError(id, error).catch(console.error);
-});
+    // Force exit after 10 seconds
+    setTimeout(() => {
+      console.error('[main] Forced exit after timeout');
+      process.exit(1);
+    }, 10000).unref();
+  };
 
-// Global error handlers
-process.on("uncaughtException", (error: Error) => {
-  console.error("Uncaught Exception:", error.message);
-  console.error("Stack trace:", error.stack);
-  // Optionally notify an error reporting service here
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+}
 
-  // Gracefully shutdown
-  (async () => {
-    try {
-      console.log("Attempting graceful shutdown...");
-      await multiplexer.stop();
-    } catch (shutdownError) {
-      console.error("Error during shutdown:", shutdownError.message);
-    } finally {
-      // Force exit after 3 seconds if graceful shutdown fails
-      setTimeout(() => {
-        console.error("Forcing exit due to uncaught exception");
-        process.exit(1);
-      }, 3000);
-    }
-  })();
-});
-
-process.on("unhandledRejection", (reason: any, promise: Promise<any>) => {
-  console.error("Unhandled Promise Rejection:");
-  console.error("Promise:", promise);
-  console.error("Reason:", reason);
-  // Optionally notify an error reporting service here
-});
-
-// Warning handler
-process.on("warning", (warning: Error) => {
-  console.warn("Process Warning:", warning.name);
-  console.warn("Message:", warning.message);
-  console.warn("Stack:", warning.stack);
-});
-
-// Handle process signals
-process.on("SIGTERM", async () => {
-  console.log("Received SIGTERM signal");
-  try {
-    await multiplexer.stop();
-    process.exit(0);
-  } catch (error) {
-    console.error("Error during SIGTERM shutdown:", error);
-    process.exit(1);
-  }
-});
-
-// Handle process termination
-process.on("SIGINT", async () => {
-  console.log("Stopping services...");
-  await multiplexer.stop();
-  process.exit(0);
+main().catch((err) => {
+  console.error('[main] Fatal error:', err);
+  process.exit(1);
 });

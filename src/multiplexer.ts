@@ -1,288 +1,259 @@
-import EventEmitter from 'events';
-import { ShairportSync } from 'shairport-sync';
-import {
-  PassThrough,
-  Stream,
-} from 'stream';
-
-import { AirplayDevice } from './airplay';
+import { EventEmitter } from 'events';
+import { ShairportManager } from './shairport';
+import { StreamManager } from './stream-manager';
 import { DeviceDiscovery } from './discovery';
-import {
-  AudioDevice,
-  DeviceConfig,
-} from './models';
-import { SonosDevice } from './sonos';
-import { TeufelDevice } from './teufel';
-
-interface AudioMetadata {
-  artist?: string;
-  title?: string;
-  album?: string;
-  artwork?: Buffer;
-}
+import { AppConfig } from './config';
+import { AudioDevice } from './devices/base';
+import { SonosOutputDevice } from './devices/sonos';
+import { TeufelOutputDevice } from './devices/teufel';
+import { AirplayOutputDevice } from './devices/airplay';
+import { DeviceConfig, MultiplexerStatus, TrackMetadata } from './types';
 
 export class AudioMultiplexer extends EventEmitter {
-  private devices: Map<string, AudioDevice> = new Map();
-  private deviceDiscovery: DeviceDiscovery;
-  private currentMetadata: AudioMetadata = {};
-  private pipeStream: PassThrough;
-  private readonly PIPE_PATH = "/tmp/shairport-sync-audio";
-  private shairport?: ShairportSync;
+  private config: AppConfig;
+  private shairport: ShairportManager;
+  private streamManager: StreamManager;
+  private discovery: DeviceDiscovery;
+  private devices = new Map<string, AudioDevice>();
+  private metadata: TrackMetadata = {};
+  private streaming = false;
+  private audioStreamUrl: string;
 
-  constructor() {
+  constructor(config: AppConfig) {
     super();
-    this.pipeStream = new PassThrough();
-    this.deviceDiscovery = new DeviceDiscovery();
-    this.initializeDeviceDiscovery();
+    this.config = config;
+    this.shairport = new ShairportManager(config);
+    this.streamManager = new StreamManager(config.audioFormat);
+    this.discovery = new DeviceDiscovery();
+    this.audioStreamUrl = `http://${config.localIp}:${config.httpPort}/audio/stream`;
 
-    // Add error handler for the multiplexer itself
-    this.on("error", this.handleProcessError.bind(this));
-    this.on("fatalError", this.handleFatalError.bind(this));
-
-    this.initializeShairport();
+    this.setupShairportHandlers();
+    this.setupDiscoveryHandlers();
   }
 
-  private initializeDeviceDiscovery() {
-    console.log("Starting device discovery...");
+  private setupShairportHandlers(): void {
+    this.shairport.on('audio', (audioStream) => {
+      console.log('[multiplexer] Audio stream started from shairport-sync');
+      this.streaming = true;
+      this.streamManager.setSource(audioStream);
 
-    this.deviceDiscovery.on("deviceFound", (config: DeviceConfig) => {
-      console.log(`Found device: ${config.name} at ${config.host}`);
-
-      // Automatically add discovered devices
-      switch (config.type) {
-        case "sonos":
-          this.addDevice(`sonos-${config.host}`, new SonosDevice(config));
-          break;
-        case "teufel":
-          this.addDevice(`teufel-${config.host}`, new TeufelDevice(config));
-          break;
-        case "homepod":
-          this.addDevice(`homepod-${config.host}`, new AirplayDevice(config));
-          break;
-      }
-    });
-
-    this.deviceDiscovery.on("deviceLost", (config: DeviceConfig) => {
-      console.log(`Lost device: ${config.name}`);
-    });
-
-    // Start discovery and set up status monitoring
-    this.deviceDiscovery
-      .startDiscovery()
-      .then(() => {
-        // Check discovery status every 10 seconds for the first minute
-        let checks = 0;
-        const statusInterval = setInterval(() => {
-          checks++;
-          const status = this.deviceDiscovery.getDiscoveryStatus();
-          console.log("\nDiscovery Status Update:", status);
-
-          if (checks >= 6) {
-            // After 1 minute
-            clearInterval(statusInterval);
-            if (status.totalDevices === 0) {
-              console.warn(
-                "No devices found after 1 minute. Please check your network configuration."
-              );
-            }
-          }
-        }, 10000);
-      })
-      .catch((error) => {
-        console.error("Failed to start device discovery:", error.message);
-      });
-  }
-
-  private initializeShairport() {
-    try {
-        this.startShairportSync();
-    } catch (error) {
-      this.handleProcessError(error);
-    }
-  }
-
-  private startShairportSync() {
-    const airplay = new ShairportSync();
-
-    // Set the receiver public name
-    airplay.name = 'Multi-Room Audio';
-
-    airplay.start()
-
-    airplay.output.stream.pipe(this.pipeStream);
-    airplay.output.stream.on('data', (chunk: Buffer) => {
-        console.log('pipe data', chunk)
-      this.handleAudioStream(this.pipeStream);
-    });
-  }
-
-  private restartShairportSync() {
-    console.log("Attempting to restart shairport-sync...");
-    setTimeout(() => {
-      this.startShairportSync();
-    }, 5000); // Wait 5 seconds before attempting restart
-  }
-
-  addDevice(id: string, device: AudioDevice): void {
-    this.devices.set(id, device);
-    device.on("error", (error) => this.emit("deviceError", { id, error }));
-  }
-
-  private async handleMetadata(meta: any) {
-    this.currentMetadata = {
-      artist: meta.artist,
-      title: meta.title,
-      album: meta.album,
-      artwork: meta.artwork,
-    };
-    this.emit("metadata", this.currentMetadata);
-  }
-
-  private async handleAudioStream(stream: Stream) {
-    try {
-      const streams = this.createStreamCopies(stream, this.devices.size);
-
-      const streamPromises = Array.from(this.devices.entries()).map(
-        async ([id, device], index) => {
-          try {
-            console.log('playing stream on device', id)
-            await device.play(streams[index]);
-          } catch (error) {
-            console.error(`Failed to stream to device ${id}:`, error);
-          }
+      // Start audio on all enabled, connected devices
+      for (const [id, device] of this.devices) {
+        if (device.getState().enabled && device.getState().connected) {
+          this.startDeviceAudio(device);
         }
-      );
+      }
 
-      await Promise.all(streamPromises);
-    } catch (error) {
-      this.handleProcessError(error);
+      this.emitStatusChanged();
+
+      audioStream.on('end', () => {
+        console.log('[multiplexer] Audio stream ended');
+        this.streaming = false;
+        this.stopAllDeviceAudio();
+        this.emitStatusChanged();
+      });
+    });
+
+    this.shairport.on('metadata', (meta: TrackMetadata) => {
+      this.metadata = { ...this.metadata, ...meta };
+      this.emitStatusChanged();
+    });
+
+    this.shairport.on('stopped', () => {
+      this.streaming = false;
+      this.metadata = {};
+      this.emitStatusChanged();
+    });
+
+    this.shairport.on('error', (err: Error) => {
+      console.error(`[multiplexer] Shairport error: ${err.message}`);
+    });
+  }
+
+  private setupDiscoveryHandlers(): void {
+    this.discovery.on('deviceFound', (config: DeviceConfig) => {
+      this.addDevice(config);
+    });
+
+    this.discovery.on('deviceLost', (config: DeviceConfig) => {
+      this.removeDevice(config.id);
+    });
+  }
+
+  private addDevice(config: DeviceConfig): void {
+    if (this.devices.has(config.id)) return;
+
+    let device: AudioDevice;
+
+    switch (config.type) {
+      case 'sonos':
+        device = new SonosOutputDevice(config);
+        break;
+      case 'teufel':
+        device = new TeufelOutputDevice(config);
+        break;
+      case 'airplay':
+        device = new AirplayOutputDevice(config);
+        break;
+      default:
+        console.warn(`[multiplexer] Unknown device type: ${config.type}`);
+        return;
+    }
+
+    device.on('stateChanged', () => {
+      this.emitStatusChanged();
+    });
+
+    device.on('error', (err: Error) => {
+      console.error(`[multiplexer] Device ${config.name} error: ${err.message}`);
+    });
+
+    this.devices.set(config.id, device);
+    console.log(`[multiplexer] Added device: ${config.name} (${config.type})`);
+
+    // Auto-connect the device
+    device.connect().then(() => {
+      // If we're already streaming, start audio on this device
+      if (this.streaming && device.getState().enabled) {
+        this.startDeviceAudio(device);
+      }
+      this.emitStatusChanged();
+    }).catch((err) => {
+      console.error(`[multiplexer] Failed to connect ${config.name}: ${err.message}`);
+    });
+
+    this.emitStatusChanged();
+  }
+
+  private removeDevice(id: string): void {
+    const device = this.devices.get(id);
+    if (!device) return;
+
+    this.streamManager.unsubscribe(id);
+    device.disconnect().catch(() => {});
+    this.devices.delete(id);
+    console.log(`[multiplexer] Removed device: ${device.name}`);
+    this.emitStatusChanged();
+  }
+
+  private startDeviceAudio(device: AudioDevice): void {
+    const config = device.config;
+
+    if (config.type === 'airplay' && device instanceof AirplayOutputDevice && device.isRaopMode) {
+      // AirPlay RAOP mode: pipe PCM directly
+      const pcmStream = this.streamManager.subscribe(config.id);
+      device.pipeAudio(pcmStream);
+    } else {
+      // Sonos, Teufel, AirPlay HTTP fallback: point to our HTTP stream URL
+      device.startAudio(this.audioStreamUrl).catch((err) => {
+        console.error(`[multiplexer] Failed to start audio on ${device.name}: ${err.message}`);
+      });
     }
   }
 
-  private createStreamCopies(
-    sourceStream: Stream,
-    count: number
-  ): PassThrough[] {
-    const streams: PassThrough[] = [];
-    for (let i = 0; i < count; i++) {
-      const passThroughStream = new PassThrough();
-      sourceStream.pipe(passThroughStream);
-      streams.push(passThroughStream);
+  private stopAllDeviceAudio(): void {
+    for (const [id, device] of this.devices) {
+      device.stopAudio().catch(() => {});
+      this.streamManager.unsubscribe(id);
     }
-    return streams;
   }
 
-  async setMasterVolume(volume: number): Promise<void> {
-    const volumePromises = Array.from(this.devices.values()).map((device) =>
-      device.setVolume(volume)
-    );
-    await Promise.all(volumePromises);
-  }
+  async start(): Promise<void> {
+    console.log('[multiplexer] Starting Audio Multiplexer...');
+    console.log(`[multiplexer] Receiver name: ${this.config.receiverName}`);
+    console.log(`[multiplexer] HTTP port: ${this.config.httpPort}`);
+    console.log(`[multiplexer] Audio stream URL: ${this.audioStreamUrl}`);
 
-  private handleProcessError(error: Error): void {
-    console.error("AudioMultiplexer encountered an error:", error);
-    this.emit("error", error);
+    // Start device discovery
+    await this.discovery.start();
 
-    // Attempt recovery
+    // Start shairport-sync (AirPlay receiver)
     try {
-      this.restartShairportSync();
-    } catch (recoveryError) {
-      console.error("Recovery failed:", recoveryError);
+      await this.shairport.start();
+      console.log('[multiplexer] Shairport-sync started successfully');
+    } catch (err: any) {
+      console.warn(`[multiplexer] Shairport-sync not available: ${err.message}`);
+      console.warn('[multiplexer] Running without AirPlay receiver - use audio stream endpoint for testing');
     }
-  }
 
-  // Add a new event for fatal errors
-  private async handleFatalError(error: Error): Promise<void> {
-    console.error("Fatal error encountered:", error);
-    try {
-      await this.stop();
-    } finally {
-      // Notify that the multiplexer needs to be restarted
-      process.exit(1);
-    }
+    this.emitStatusChanged();
   }
 
   async stop(): Promise<void> {
-    // Add stack trace logging
-    const stack = new Error().stack;
-    console.log("stop() called from:", stack?.split("\n").slice(2).join("\n"));
+    console.log('[multiplexer] Stopping Audio Multiplexer...');
 
-    try {
-      console.log("Stopping AudioMultiplexer...");
-      this.deviceDiscovery.stop();
+    this.stopAllDeviceAudio();
 
-      // Stop all device streams
-      const stopPromises = Array.from(this.devices.values()).map(
-        async (device) => {
-          try {
-            await device.stop();
-          } catch (error) {
-            console.error(`Error stopping device ${device.name}:`, error);
-          }
-        }
-      );
+    // Disconnect all devices
+    for (const [id, device] of this.devices) {
+      await device.disconnect().catch(() => {});
+    }
+    this.devices.clear();
 
-      await Promise.allSettled(stopPromises);
+    await this.shairport.stop();
+    await this.discovery.stop();
+    this.streamManager.cleanup();
 
-      // Cleanup pipe stream
-      if (this.pipeStream) {
-        this.pipeStream.end();
-      }
+    console.log('[multiplexer] Stopped');
+  }
 
-      // Remove pipe file
-      const fs = require("fs").promises;
-      try {
-        await fs.unlink(this.PIPE_PATH);
-      } catch (error) {
-        // Ignore if pipe doesn't exist
-      }
+  // --- Public control methods ---
 
-      console.log("AudioMultiplexer stopped successfully");
-    } catch (error) {
-      console.error("Error during AudioMultiplexer shutdown:", error);
-      throw error;
+  async setDeviceVolume(id: string, volume: number): Promise<void> {
+    const device = this.devices.get(id);
+    if (!device) throw new Error(`Device not found: ${id}`);
+    await device.setVolume(volume);
+  }
+
+  async setDeviceMute(id: string, muted: boolean): Promise<void> {
+    const device = this.devices.get(id);
+    if (!device) throw new Error(`Device not found: ${id}`);
+    await device.setMute(muted);
+  }
+
+  async setDeviceEnabled(id: string, enabled: boolean): Promise<void> {
+    const device = this.devices.get(id);
+    if (!device) throw new Error(`Device not found: ${id}`);
+
+    device.setEnabled(enabled);
+
+    if (enabled && this.streaming && device.getState().connected) {
+      this.startDeviceAudio(device);
+    } else if (!enabled) {
+      await device.stopAudio();
+      this.streamManager.unsubscribe(id);
     }
   }
 
-  // Add recovery method
-  async recover(): Promise<void> {
-    console.log("Attempting to recover AudioMultiplexer...");
-    try {
-      // Stop all current operations
-      await this.stop();
-
-      // Reinitialize
-      this.pipeStream = new PassThrough();
-      await this.initializeShairport();
-
-      // Reconnect devices
-      for (const device of this.devices.values()) {
-        try {
-          if (device instanceof SonosDevice || device instanceof TeufelDevice) {
-            await device["initializeDevice"]();
-          }
-        } catch (error) {
-          console.error(`Failed to reconnect device ${device.name}:`, error);
-        }
-      }
-
-      console.log("Recovery completed successfully");
-    } catch (error) {
-      console.error("Recovery failed:", error);
-      throw error;
+  async setMasterVolume(volume: number): Promise<void> {
+    const promises: Promise<void>[] = [];
+    for (const [, device] of this.devices) {
+      promises.push(device.setVolume(volume));
     }
+    await Promise.allSettled(promises);
   }
 
-  getStatus(): Record<string, any> {
-    const status: Record<string, any> = {
-      metadata: this.currentMetadata,
-      devices: {},
+  getStatus(): MultiplexerStatus {
+    const deviceList = Array.from(this.devices.values()).map((device) => ({
+      ...device.config,
+      ...device.getState(),
+    }));
+
+    return {
+      receiverRunning: this.shairport.isRunning(),
+      receiverName: this.config.receiverName,
+      streaming: this.streaming,
+      metadata: this.metadata,
+      devices: deviceList,
+      httpPort: this.config.httpPort,
     };
+  }
 
-    for (const [id, device] of this.devices.entries()) {
-      status.devices[id] = device.getStatus();
-    }
+  getStreamManager(): StreamManager {
+    return this.streamManager;
+  }
 
-    return status;
+  private emitStatusChanged(): void {
+    this.emit('statusChanged');
   }
 }
