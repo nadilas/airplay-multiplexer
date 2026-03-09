@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+/// Type alias for room identifiers (slug-based strings).
+pub type RoomId = String;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DeviceType {
@@ -109,6 +112,8 @@ pub struct DeviceInfo {
     pub enabled: bool,
     pub connected: bool,
     pub playing: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub room_id: Option<RoomId>,
 }
 
 impl DeviceInfo {
@@ -126,10 +131,51 @@ impl DeviceInfo {
             enabled: state.enabled,
             connected: state.connected,
             playing: state.playing,
+            room_id: None,
         }
+    }
+
+    pub fn with_room_id(mut self, room_id: Option<RoomId>) -> Self {
+        self.room_id = room_id;
+        self
     }
 }
 
+/// Room configuration stored in the database.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoomConfig {
+    pub id: RoomId,
+    pub name: String,
+    pub receiver_name: String,
+    pub shairport_port: u16,
+    pub is_default: bool,
+}
+
+/// Runtime status of a room.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoomStatus {
+    pub id: RoomId,
+    pub name: String,
+    pub receiver_running: bool,
+    pub streaming: bool,
+    pub metadata: TrackMetadata,
+    pub master_volume: u8,
+    pub devices: Vec<DeviceInfo>,
+    pub is_default: bool,
+}
+
+/// Full system status including all rooms.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemStatus {
+    pub http_port: u16,
+    pub rooms: Vec<RoomStatus>,
+    pub unassigned_devices: Vec<DeviceInfo>,
+}
+
+/// Legacy status for backward compatibility.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MultiplexerStatus {
@@ -220,6 +266,24 @@ mod tests {
         assert_eq!(info.id, "test-1");
         assert_eq!(info.volume, 75);
         assert!(info.muted);
+        assert!(info.room_id.is_none());
+    }
+
+    #[test]
+    fn test_device_info_with_room_id() {
+        let config = DeviceConfig {
+            id: "test-1".to_string(),
+            name: "Speaker".to_string(),
+            host: "192.168.1.1".to_string(),
+            port: 1400,
+            device_type: DeviceType::Sonos,
+            location: None,
+            model: None,
+        };
+        let state = DeviceState::default();
+        let info = DeviceInfo::from_config_and_state(&config, &state)
+            .with_room_id(Some("living-room".to_string()));
+        assert_eq!(info.room_id, Some("living-room".to_string()));
     }
 
     #[test]
@@ -233,5 +297,51 @@ mod tests {
         assert!(json.contains("title"));
         assert!(!json.contains("artist"));
         assert!(!json.contains("album"));
+    }
+
+    #[test]
+    fn test_room_config_serialization() {
+        let room = RoomConfig {
+            id: "living-room".to_string(),
+            name: "Living Room".to_string(),
+            receiver_name: "Living Room Audio".to_string(),
+            shairport_port: 5100,
+            is_default: true,
+        };
+        let json = serde_json::to_string(&room).unwrap();
+        assert!(json.contains("living-room"));
+        assert!(json.contains("isDefault"));
+        assert!(json.contains("shairportPort"));
+    }
+
+    #[test]
+    fn test_system_status_serialization() {
+        let status = SystemStatus {
+            http_port: 5000,
+            rooms: vec![],
+            unassigned_devices: vec![],
+        };
+        let json = serde_json::to_string(&status).unwrap();
+        assert!(json.contains("httpPort"));
+        assert!(json.contains("rooms"));
+        assert!(json.contains("unassignedDevices"));
+    }
+
+    #[test]
+    fn test_room_status_serialization() {
+        let status = RoomStatus {
+            id: "bedroom".to_string(),
+            name: "Bedroom".to_string(),
+            receiver_running: false,
+            streaming: false,
+            metadata: TrackMetadata::default(),
+            master_volume: 50,
+            devices: vec![],
+            is_default: false,
+        };
+        let json = serde_json::to_string(&status).unwrap();
+        assert!(json.contains("receiverRunning"));
+        assert!(json.contains("masterVolume"));
+        assert!(json.contains("isDefault"));
     }
 }

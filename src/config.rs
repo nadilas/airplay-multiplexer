@@ -7,6 +7,8 @@ pub struct AppConfig {
     pub audio_format: AudioFormat,
     pub shairport_path: String,
     pub local_ip: String,
+    pub db_path: String,
+    pub shairport_base_port: u16,
 }
 
 pub fn load_config() -> AppConfig {
@@ -34,6 +36,12 @@ pub fn load_config() -> AppConfig {
         shairport_path: std::env::var("SHAIRPORT_PATH")
             .unwrap_or_else(|_| "shairport-sync".to_string()),
         local_ip: std::env::var("LOCAL_IP").unwrap_or_else(|_| get_local_ip()),
+        db_path: std::env::var("DB_PATH")
+            .unwrap_or_else(|_| "audio_multiplexer.db".to_string()),
+        shairport_base_port: std::env::var("SHAIRPORT_BASE_PORT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(5100),
     }
 }
 
@@ -67,6 +75,8 @@ mod tests {
             "CHANNELS",
             "SHAIRPORT_PATH",
             "LOCAL_IP",
+            "DB_PATH",
+            "SHAIRPORT_BASE_PORT",
         ] {
             std::env::remove_var(key);
         }
@@ -83,6 +93,8 @@ mod tests {
         assert_eq!(config.audio_format.bit_depth, 16);
         assert_eq!(config.audio_format.channels, 2);
         assert_eq!(config.shairport_path, "shairport-sync");
+        assert_eq!(config.db_path, "audio_multiplexer.db");
+        assert_eq!(config.shairport_base_port, 5100);
     }
 
     #[test]
@@ -132,5 +144,23 @@ mod tests {
         std::env::set_var("LOCAL_IP", "10.0.0.5");
         let config = load_config();
         assert_eq!(config.local_ip, "10.0.0.5");
+    }
+
+    #[test]
+    #[serial]
+    fn test_db_path_from_env() {
+        clear_env();
+        std::env::set_var("DB_PATH", "/data/rooms.db");
+        let config = load_config();
+        assert_eq!(config.db_path, "/data/rooms.db");
+    }
+
+    #[test]
+    #[serial]
+    fn test_shairport_base_port_from_env() {
+        clear_env();
+        std::env::set_var("SHAIRPORT_BASE_PORT", "6000");
+        let config = load_config();
+        assert_eq!(config.shairport_base_port, 6000);
     }
 }

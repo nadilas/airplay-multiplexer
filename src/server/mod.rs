@@ -4,7 +4,6 @@ use axum::Router;
 use tokio::sync::{watch, RwLock};
 
 use crate::multiplexer::AudioMultiplexer;
-use crate::stream_manager::StreamManager;
 
 pub mod api;
 pub mod audio_stream;
@@ -13,7 +12,6 @@ pub mod ui;
 
 pub struct AppState {
     pub multiplexer: Arc<RwLock<AudioMultiplexer>>,
-    pub stream_manager: Arc<StreamManager>,
     pub status_tx: watch::Sender<()>,
 }
 

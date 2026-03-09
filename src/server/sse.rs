@@ -24,15 +24,23 @@ async fn sse_handler(
         // Send initial connected event
         yield Ok(Event::default().data(r#"{"type":"connected"}"#));
 
-        // Send initial status
+        // Send initial system status
         {
             let mux = multiplexer.read().await;
-            let status = mux.get_status();
-            let mut payload = serde_json::to_value(&status).unwrap_or_default();
+            let system_status = mux.get_system_status().await;
+            let mut payload = serde_json::to_value(&system_status).unwrap_or_default();
             if let Some(obj) = payload.as_object_mut() {
-                obj.insert("type".to_string(), serde_json::Value::String("status".to_string()));
+                obj.insert("type".to_string(), serde_json::Value::String("systemStatus".to_string()));
             }
             yield Ok(Event::default().data(serde_json::to_string(&payload).unwrap_or_default()));
+
+            // Also send legacy status for backward compat
+            let status = mux.get_status().await;
+            let mut legacy = serde_json::to_value(&status).unwrap_or_default();
+            if let Some(obj) = legacy.as_object_mut() {
+                obj.insert("type".to_string(), serde_json::Value::String("status".to_string()));
+            }
+            yield Ok(Event::default().data(serde_json::to_string(&legacy).unwrap_or_default()));
         }
 
         // Watch for changes
@@ -40,12 +48,22 @@ async fn sse_handler(
             match status_rx.changed().await {
                 Ok(()) => {
                     let mux = multiplexer.read().await;
-                    let status = mux.get_status();
-                    let mut payload = serde_json::to_value(&status).unwrap_or_default();
+
+                    // Send system status
+                    let system_status = mux.get_system_status().await;
+                    let mut payload = serde_json::to_value(&system_status).unwrap_or_default();
                     if let Some(obj) = payload.as_object_mut() {
-                        obj.insert("type".to_string(), serde_json::Value::String("status".to_string()));
+                        obj.insert("type".to_string(), serde_json::Value::String("systemStatus".to_string()));
                     }
                     yield Ok(Event::default().data(serde_json::to_string(&payload).unwrap_or_default()));
+
+                    // Also send legacy status
+                    let status = mux.get_status().await;
+                    let mut legacy = serde_json::to_value(&status).unwrap_or_default();
+                    if let Some(obj) = legacy.as_object_mut() {
+                        obj.insert("type".to_string(), serde_json::Value::String("status".to_string()));
+                    }
+                    yield Ok(Event::default().data(serde_json::to_string(&legacy).unwrap_or_default()));
                 }
                 Err(_) => break,
             }

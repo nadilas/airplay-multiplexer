@@ -16,6 +16,7 @@ pub enum ShairportEvent {
 pub struct ShairportManager {
     shairport_path: String,
     receiver_name: String,
+    port: Option<u16>,
     child: Option<Child>,
 }
 
@@ -24,8 +25,14 @@ impl ShairportManager {
         Self {
             shairport_path: shairport_path.to_string(),
             receiver_name: receiver_name.to_string(),
+            port: None,
             child: None,
         }
+    }
+
+    pub fn with_port(mut self, port: u16) -> Self {
+        self.port = Some(port);
+        self
     }
 
     pub async fn validate_binary(&self) -> Result<()> {
@@ -68,14 +75,21 @@ impl ShairportManager {
         audio_tx: broadcast::Sender<Bytes>,
         event_tx: tokio::sync::mpsc::Sender<ShairportEvent>,
     ) -> Result<()> {
+        let mut args = vec![
+            "--name".to_string(),
+            self.receiver_name.clone(),
+            "--output".to_string(),
+            "stdout".to_string(),
+            "-v".to_string(),
+        ];
+
+        if let Some(port) = self.port {
+            args.push("--port".to_string());
+            args.push(port.to_string());
+        }
+
         let mut child = Command::new(&self.shairport_path)
-            .args([
-                "--name",
-                &self.receiver_name,
-                "--output",
-                "stdout",
-                "-v",
-            ])
+            .args(&args)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -130,6 +144,14 @@ impl ShairportManager {
     pub fn is_running(&self) -> bool {
         self.child.is_some()
     }
+
+    pub fn port(&self) -> Option<u16> {
+        self.port
+    }
+
+    pub fn receiver_name(&self) -> &str {
+        &self.receiver_name
+    }
 }
 
 pub fn parse_metadata_line(line: &str) -> Option<TrackMetadata> {
@@ -179,5 +201,19 @@ mod tests {
     fn test_parse_non_metadata_line() {
         assert!(parse_metadata_line("Playing audio...").is_none());
         assert!(parse_metadata_line("").is_none());
+    }
+
+    #[test]
+    fn test_shairport_manager_with_port() {
+        let mgr = ShairportManager::new("shairport-sync", "Test")
+            .with_port(5100);
+        assert_eq!(mgr.port(), Some(5100));
+        assert_eq!(mgr.receiver_name(), "Test");
+    }
+
+    #[test]
+    fn test_shairport_manager_without_port() {
+        let mgr = ShairportManager::new("shairport-sync", "Test");
+        assert_eq!(mgr.port(), None);
     }
 }
